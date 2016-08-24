@@ -16,16 +16,15 @@
 
 package de.jkeylockmanager.manager.implementation.lockstripe;
 
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
+
 import de.jkeylockmanager.contract.Contract;
 import de.jkeylockmanager.manager.KeyLockManager;
 import de.jkeylockmanager.manager.LockCallback;
 import de.jkeylockmanager.manager.ReturnValueLockCallback;
-
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-
-import static java.lang.Math.abs;
-import static java.util.Arrays.setAll;
 
 /**
  * Implementation of {@link KeyLockManager}.
@@ -44,12 +43,16 @@ public final class StripedKeyLockManager implements KeyLockManager {
 	 * Default number of Stripes
 	 */
 	private static final int DEFAULT_NUMBER_OF_STRIPES = 16;
+	
+	/**
+	 * Creates exclusive locks.
+	 */
+	private static final Function<Object, ReentrantLock> lockCreator = (o) -> new ReentrantLock();
 
 
-	private final ConcurrentHashMap<Object, CountingLock> key2lock = new ConcurrentHashMap<>();
-	private final CountingLock[] stripes;
+	private final StripedResourceManager<ReentrantLock> resourceManager;
 	private final long lockTimeout;
-	private final TimeUnit lockTimeoutUnit;
+    private final TimeUnit lockTimeoutUnit;
 
 
 	/**
@@ -76,12 +79,10 @@ public final class StripedKeyLockManager implements KeyLockManager {
 		Contract.isNotNull(lockTimeoutUnit, "lockTimeoutUnit != null");
 		Contract.isTrue(lockTimeout > 0, "lockTimeout > 0");
 		Contract.isTrue(numberOfStripes > 0, "numberOfStripes > 0");
-
+		
+		this.resourceManager = new StripedResourceManager<>(lockCreator, lockTimeout, lockTimeoutUnit);
 		this.lockTimeout = lockTimeout;
 		this.lockTimeoutUnit = lockTimeoutUnit;
-		this.stripes = new CountingLock[numberOfStripes];
-
-		setAll(stripes, i -> new CountingLock(lockTimeout, lockTimeoutUnit));
 	}
 
 
@@ -109,68 +110,31 @@ public final class StripedKeyLockManager implements KeyLockManager {
 	private <R> R executeLockedInternal(final Object key, final ReturnValueLockCallback<R> callback) {
 		assert key != null : "contract broken: key != null";
 		assert callback != null : "contract broken: callback != null";
-
-		final CountingLock lock = getKeyLock(key);
-		try {
-			lock.tryLock();
+		
+		return this.resourceManager.doWithResource(key, (lock) -> {
+			CountingResourceHolder.lockOrThrowException(lock, lockTimeout, lockTimeoutUnit);
 			try {
 				return callback.doInLock();
 			} finally {
 				lock.unlock();
 			}
-		} finally {
-			freeKeyLock(key, lock);
-		}
+		});
+		
 	}
+	
+	
 
-	private void freeKeyLock(final Object key, final CountingLock lock) {
-		assert key != null : "contract broken: key != null";
-		assert lock != null : "contract broken: lock != null";
-		getStripedLock(key).tryLock();
-		try {
-			lock.decrementUses();
-			if (!lock.isUsed()) {
-				key2lock.remove(key);
-			}
-		} finally {
-			getStripedLock(key).unlock();
-		}
-	}
-
-	private CountingLock getKeyLock(final Object key) {
-		assert key != null : "contract broken: key != null";
-		getStripedLock(key).tryLock();
-		try {
-			final CountingLock result;
-			final CountingLock previousLock = key2lock.get(key);
-			if (previousLock == null) {
-				result = new CountingLock(lockTimeout, lockTimeoutUnit);
-				key2lock.put(key, result);
-			} else {
-				result = previousLock;
-			}
-			result.incrementUses();
-			return result;
-		} finally {
-			getStripedLock(key).unlock();
-		}
-	}
-
-	private CountingLock getStripedLock(final Object key) {
-		assert key != null : "contract broken: key != null";
-		return stripes[abs(key.hashCode() % stripes.length)];
-	}
 
 	/**
-	 * for testing only
-	 *
-	 * @return the number of currently active key locks
-	 *
-	 */
-	int activeKeyLocksCount() {
-		return key2lock.size();
-	}
-
+     * for testing only
+     *
+     * @return the number of currently active key locks
+     *
+     */
+    int activeKeyLocksCount() {
+        return this.resourceManager.key2lock.size();
+    }
+	
 	/**
 	 * for testing only
 	 *
@@ -178,8 +142,8 @@ public final class StripedKeyLockManager implements KeyLockManager {
 	 */
 	int waitingThreadsCount() {
 		int result = 0;
-		for (final CountingLock lock : key2lock.values()) {
-			result += lock.getQueueLength();
+		for (final CountingResourceHolder<ReentrantLock> lock : this.resourceManager.key2lock.values()) {
+			result += lock.getLock().getQueueLength();
 		}
 		return result;
 	}

@@ -17,16 +17,14 @@
 package de.jkeylockmanager.manager.implementation.lockstripe;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import de.jkeylockmanager.manager.exception.KeyLockManagerInterruptedException;
 import de.jkeylockmanager.manager.exception.KeyLockManagerTimeoutException;
 
 /**
- * 
- * Special lock implementation for internal use in this package only.
- * 
- * {@link CountingLock} adds a counter for counting its uses.
+ * {@link CountingResourceHolder} adds a counter for counting resource uses.
  * 
  * The counting functionality is not thread safe and so it is essential to use
  * the following methods only in the scope of a shared lock:
@@ -39,29 +37,24 @@ import de.jkeylockmanager.manager.exception.KeyLockManagerTimeoutException;
  * @author Marc-Olaf Jaschke
  * 
  */
-final class CountingLock {
+final class CountingResourceHolder<T> {
 
-	private final ReentrantLock delegate = new ReentrantLock();
-	private final long lockTimeout;
-	private final TimeUnit lockTimeoutUnit;
+	private final T lock;
 	private long uses = 0;
 
 	/**
-	 * Creates a new instance of {@link CountingLock} with a usage counter set
+	 * Creates a new instance of {@link CountingResourceHolder} with a usage counter set
 	 * to zero.
 	 * 
-	 * @param lockTimeout
-	 *            - the time to wait for a lock before an Exception is thrown -
-	 *            must be greater than 0
-	 * @param lockTimeoutUnit
-	 *            - the unit for lockTimeout - must not be null
+	 * 
 	 */
-	CountingLock(final long lockTimeout, final TimeUnit lockTimeoutUnit) {
-		assert lockTimeout > 0 : "contract broken: lockTimeout > 0";
-		assert lockTimeoutUnit != null : "contract broken: lockTimeoutUnit != null";
-
-		this.lockTimeout = lockTimeout;
-		this.lockTimeoutUnit = lockTimeoutUnit;
+	CountingResourceHolder(T lock) {
+		this.lock = lock;
+	}
+	
+	T getLock() {
+        return lock;
+	    
 	}
 
 	/**
@@ -69,13 +62,6 @@ final class CountingLock {
 	 */
 	void decrementUses() {
 		uses--;
-	}
-
-	/**
-	 * Delegates to {@link ReentrantLock#getQueueLength()}
-	 */
-	int getQueueLength() {
-		return delegate.getQueueLength();
 	}
 
 	/**
@@ -95,7 +81,7 @@ final class CountingLock {
 	}
 
 	/**
-	 * Decorates {@link ReentrantLock#tryLock(long, TimeUnit)}.
+	 * Tries to acquire the lock or throws an exception when the lock is not acquired in time.
 	 * 
 	 * @throws KeyLockManagerInterruptedException
 	 *             if the current thread becomes interrupted while waiting for
@@ -103,21 +89,14 @@ final class CountingLock {
 	 * @throws KeyLockManagerTimeoutException
 	 *             if the instance wide waiting time is exceeded
 	 */
-	void tryLock() {
+	static void lockOrThrowException(Lock l, long lockTimeout, TimeUnit lockTimeoutUnit) {
 		try {
-			if (!delegate.tryLock(lockTimeout, lockTimeoutUnit)) {
+			if (!l.tryLock(lockTimeout, lockTimeoutUnit)) {
 				throw new KeyLockManagerTimeoutException(lockTimeout, lockTimeoutUnit);
 			}
 		} catch (final InterruptedException e) {
 			throw new KeyLockManagerInterruptedException();
 		}
-	}
-
-	/**
-	 * Delegates to {@link java.util.concurrent.locks.ReentrantLock#unlock()}
-	 */
-	void unlock() {
-		delegate.unlock();
 	}
 
 }
